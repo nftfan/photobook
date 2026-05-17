@@ -472,20 +472,25 @@ const CF_API_TOKEN  = "cfat_puzcjGXw205A7t2bR6QtaBPuRceLjbcidBOSM8a58c4ff636";
 /* ═══════════════════════════════════════════════
    CLOUDFLARE UPLOAD CONFIG (Via your own Worker)
 ═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════
+   CLOUDFLARE UPLOAD CONFIG (Via your own Worker)
+═══════════════════════════════════════════════ */
 async function uploadToCloudflare(file) {
   const formData = new FormData();
   formData.append('file', file);
   
+  // REPLACE THIS URL WITH YOUR NEW WORKER'S URL
+  const proxyUrl = 'https://upload-proxy.gotshotu.workers.dev';
+  
   try {
-    // Send the file to your own Cloudflare Worker instead of a public proxy
-    const res = await fetch('/api/upload', {
+    const res = await fetch(proxyUrl, {
       method: 'POST',
       body: formData
     });
     
     const data = await res.json();
     if (data.success) {
-      return data.result.variants[0];
+      return data.result.variants[0]; // Returns the direct image URL
     }
     throw new Error(data.errors?.[0]?.message || 'Cloudflare upload failed');
   } catch (error) {
