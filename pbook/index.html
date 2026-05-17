@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -468,20 +469,17 @@ db.ref('.info/connected').on('value',snap=>{
 const CF_ACCOUNT_ID = "08297100f6b1a14ee551b7a57f1bdae3";
 const CF_API_TOKEN  = "cfat_puzcjGXw205A7t2bR6QtaBPuRceLjbcidBOSM8a58c4ff636";
 
+/* ═══════════════════════════════════════════════
+   CLOUDFLARE UPLOAD CONFIG (Via your own Worker)
+═══════════════════════════════════════════════ */
 async function uploadToCloudflare(file) {
   const formData = new FormData();
   formData.append('file', file);
   
-  // CORS Proxy bypasses Cloudflare's strict browser restrictions
-  const targetUrl = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/images/v1`;
-  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
-  
   try {
-    const res = await fetch(proxyUrl, {
+    // Send the file to your own Cloudflare Worker instead of a public proxy
+    const res = await fetch('/api/upload', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${CF_API_TOKEN}`
-      },
       body: formData
     });
     
