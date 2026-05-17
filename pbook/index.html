@@ -236,7 +236,8 @@ main{
   animation:itemIn .38s ease both;
 }
 .photo-item.clickable{cursor:zoom-in}
-.photo-item img{width:100%;display:block;transition:transform .4s cubic-bezier(.25,.46,.45,.94)}
+.photo-item img{width:100%;display:block;transition:transform .4s cubic-bezier(.25,.46,.45,.94); image-orientation: from-image;}
+.lb-img { image-orientation: from-image; }
 .photo-item:hover img{transform:scale(1.05)}
 
 .photo-overlay{
