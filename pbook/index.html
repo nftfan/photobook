@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -261,18 +260,16 @@ main{
 .photo-item:hover .item-del{opacity:1}
 .item-del:hover{background:rgba(180,50,50,.85);color:#fff}
 
-.raw-proc,.raw-err{
+.raw-err{
   width:100%;aspect-ratio:3/2;background:var(--surface2);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
 }
-.raw-proc .spin{width:24px;height:24px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
-.raw-proc span,.raw-err span{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);text-align:center;padding:0 12px}
+.raw-err span{font-size:.62rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);text-align:center;padding:0 12px}
 .raw-err svg{color:#6a3838}
 
 /* ── ANIMATIONS */
 @keyframes itemIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes spin{to{transform:rotate(360deg)}}
 @keyframes modalIn{from{opacity:0;transform:translateY(-10px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 
 /* ── LIGHTBOX */
@@ -450,6 +447,7 @@ const db = firebase.database();
 const FB_ROOT = 'gallery';
 const refPages   = db.ref(`${FB_ROOT}/pages`);
 const refFolders = db.ref(`${FB_ROOT}/folders`);
+const refPhotos  = db.ref(`${FB_ROOT}/photos`); // NEW: Firebase Photos Reference
 
 const $syncDot = document.getElementById('syncDot');
 function setSync(state){
@@ -464,28 +462,13 @@ db.ref('.info/connected').on('value',snap=>{
 });
 
 /* ═══════════════════════════════════════════════
-   CLOUDFLARE UPLOAD CONFIG WITH CORS PROXY
-═══════════════════════════════════════════════ */
-const CF_ACCOUNT_ID = "08297100f6b1a14ee551b7a57f1bdae3";
-const CF_API_TOKEN  = "cfat_puzcjGXw205A7t2bR6QtaBPuRceLjbcidBOSM8a58c4ff636";
-
-/* ═══════════════════════════════════════════════
-   CLOUDFLARE UPLOAD CONFIG (Via your own Worker)
-═══════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════
-   CLOUDFLARE UPLOAD CONFIG (Via your own Worker)
-═══════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════
    CLOUDFLARE R2 UPLOAD CONFIG
 ═══════════════════════════════════════════════ */
 async function uploadToCloudflare(file) {
   const formData = new FormData();
   formData.append('file', file);
   
-  // 1. Put your actual proxy worker URL here (e.g., https://upload-proxy.gotshotu.workers.dev)
   const proxyUrl = 'https://upload-proxy.gotshotu.workers.dev'; 
-  
-  // 2. Your public R2 dev URL
   const r2PublicUrl = 'https://pub-09d49e1729be4c218a60f330ac3b61b2.r2.dev/'; 
   
   try {
@@ -496,7 +479,6 @@ async function uploadToCloudflare(file) {
     
     const data = await res.json();
     if (data.success) {
-      // Combine the public URL with the uploaded file name
       return r2PublicUrl + data.fileName; 
     }
     throw new Error(data.error || 'Cloudflare upload failed');
@@ -506,13 +488,10 @@ async function uploadToCloudflare(file) {
   }
 }
 
-// Convert DataURL (like from RAW decoders) to File/Blob for CF upload
 function dataURLtoFile(dataurl, filename) {
   var arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1],
       bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
-  while(n--){
-      u8arr[n] = bstr.charCodeAt(n);
-  }
+  while(n--){ u8arr[n] = bstr.charCodeAt(n); }
   return new File([u8arr], filename, {type:mime});
 }
 
@@ -556,12 +535,8 @@ async function decodeRaw(file){
 }
 
 /* ═══════════════════════════════════════════════
-   STATE
-   pages:   [{id,name,date}]                            ← Firebase
-   folders: [{id,pageId,name,date}]                     ← Firebase
-   photos:  [{id,folderId,pageId,name,size,dataUrl,...}] ← localStorage
+   STATE (Photos are now managed purely by Firebase)
 ═══════════════════════════════════════════════ */
-const SK_P_PHOTOS='gal_photos_v2';
 const SK_UI='gal_ui_v2';
 const RAW=new Set(['nef','cr2','arw','dng','orf','rw2','raf','pef','srw','3fr','nrw']);
 
@@ -575,15 +550,7 @@ const isRaw=n=>RAW.has((n.split('.').pop()||'').toLowerCase());
 const fmtB=b=>b<1024?b+' B':b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB';
 const fmtD=s=>new Date(s).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
 
-/* ── Local persistence (photos + UI prefs) */
-function savePhotos(){
-  const cp=photos.map(p=>{const c={...p};delete c._ref;return c});
-  try{localStorage.setItem(SK_P_PHOTOS,JSON.stringify(cp));}
-  catch{toast('Storage full — some photos may not persist.')}
-}
-function loadPhotos(){
-  try{const p=localStorage.getItem(SK_P_PHOTOS);if(p)photos=JSON.parse(p);}catch{photos=[]}
-}
+/* ── UI Prefs */
 function saveUI(){
   try{localStorage.setItem(SK_UI,JSON.stringify({sortMode,currentPageId,currentFolderId}));}catch{}
 }
@@ -601,13 +568,10 @@ function bindFirebase(){
   refPages.on('value',snap=>{
     const v=snap.val()||{};
     pages=Object.keys(v).map(k=>({id:k,...v[k]}));
-    // Auto-pick a default page if none selected & pages exist
     if(!currentPageId && pages.length>0){
-      // Prefer one named "Home", else first
       const home=pages.find(p=>p.name.toLowerCase()==='home');
       currentPageId=(home||pages[0]).id;
     }
-    // If current page got deleted elsewhere
     if(currentPageId && !pages.find(p=>p.id===currentPageId)){
       currentPageId=pages[0]?.id||null;
       currentFolderId=null;
@@ -615,24 +579,29 @@ function bindFirebase(){
     _firstPagesLoaded=true;
     afterFirstLoad();
     renderAll();
-  },err=>{console.error('Pages sync error',err);setSync('error');toast('Sync error – check connection');});
+  });
 
   refFolders.on('value',snap=>{
     const v=snap.val()||{};
     folders=Object.keys(v).map(k=>({id:k,...v[k]}));
-    // If we're inside a folder that got deleted elsewhere
     if(currentFolderId && !folders.find(f=>f.id===currentFolderId)){
       currentFolderId=null;
     }
     _firstFoldersLoaded=true;
     afterFirstLoad();
     renderAll();
-  },err=>{console.error('Folders sync error',err);setSync('error');});
+  });
+
+  // NEW: Firebase Photos Listener
+  refPhotos.on('value',snap=>{
+    const v=snap.val()||{};
+    photos=Object.keys(v).map(k=>({id:k,...v[k]}));
+    renderAll();
+  });
 }
 
 function afterFirstLoad(){
   if(_firstPagesLoaded && _firstFoldersLoaded){
-    // If absolutely nothing exists, seed with a default Home page
     if(pages.length===0){
       const id=uid();
       refPages.child(id).set({name:'Home',date:new Date().toISOString()});
@@ -656,13 +625,9 @@ function renderAll(){
   saveUI();
 }
 
-/* ── Sidebar */
 function renderSidebar(){
   $sbList.innerHTML='';
-  const sortedPages=[...pages].sort((a,b)=>{
-    // pages always shown newest first by default in sidebar
-    return new Date(b.date)-new Date(a.date);
-  });
+  const sortedPages=[...pages].sort((a,b)=>new Date(b.date)-new Date(a.date));
   sortedPages.forEach(pg=>{
     const row=el('div','sb-page'+(pg.id===currentPageId?' active':''));
     const nm=el('span','sb-page-name',pg.name);
@@ -689,7 +654,6 @@ function renderSidebar(){
   });
 }
 
-/* ── Breadcrumb */
 function renderBreadcrumb(){
   $bc.innerHTML='';
   const page=pages.find(p=>p.id===currentPageId);
@@ -706,15 +670,12 @@ function renderBreadcrumb(){
   }
 }
 
-/* ── Main */
 function renderMain(){
   $main.innerHTML='';
   if(!currentPageId){
     const es=el('div','empty-state');
-    es.innerHTML=`
-      <div class="empty-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div>
-      <h2>No page selected</h2>
-      <p>Create a page from the sidebar to get started.</p>`;
+    es.innerHTML=`<div class="empty-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div>
+      <h2>No page selected</h2><p>Create a page from the sidebar to get started.</p>`;
     $main.appendChild(es);
     return;
   }
@@ -745,7 +706,7 @@ function sortPhotos(list){
     if(sortMode==='date-asc') return new Date(a.date)-new Date(b.date);
     if(sortMode==='name-asc') return a.name.localeCompare(b.name);
     if(sortMode==='name-desc')return b.name.localeCompare(a.name);
-    if(sortMode==='count-desc')return new Date(b.date)-new Date(a.date); // fallback
+    if(sortMode==='count-desc')return new Date(b.date)-new Date(a.date);
     return 0;
   });
   return arr;
@@ -753,15 +714,14 @@ function sortPhotos(list){
 
 function renderPageView(){
   const pageFolders=folders.filter(f=>f.pageId===currentPageId);
-  const loose=photos.filter(p=>p.pageId===currentPageId && (p.folderId===null||p.folderId===undefined));
+  const loose=photos.filter(p=>p.pageId===currentPageId && !p.folderId);
 
   $cnt.textContent=pageFolders.length>0?`${pageFolders.length} folder${pageFolders.length!==1?'s':''}`:
     loose.length>0?`${loose.length} photo${loose.length!==1?'s':''}`:'' ;
 
   if(pageFolders.length===0&&loose.length===0){
     const es=el('div','empty-state');
-    es.innerHTML=`
-      <div class="empty-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+    es.innerHTML=`<div class="empty-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
       <h2>This page is empty</h2>
       <p>Create a folder to organise your photos, or upload directly. NEF, CR2, ARW and other RAW formats are supported.</p>
       <div class="fmt-row"><span class="fmt-tag">JPG</span><span class="fmt-tag">PNG</span><span class="fmt-tag">WEBP</span><span class="fmt-tag">NEF</span><span class="fmt-tag">CR2</span><span class="fmt-tag">ARW</span><span class="fmt-tag">DNG</span></div>`;
@@ -785,8 +745,9 @@ function renderPageView(){
     $main.appendChild(sh);
     document.getElementById('clearLooseBtn')?.addEventListener('click',()=>{
       if(confirm('Remove all unsorted photos on this page?')){
-        photos=photos.filter(p=>!(p.pageId===currentPageId && (p.folderId===null||p.folderId===undefined)));
-        savePhotos();renderAll();
+        const updates = {};
+        loose.forEach(p => { updates[p.id] = null; });
+        if(Object.keys(updates).length) refPhotos.update(updates).then(() => toast('Unsorted photos removed'));
       }
     });
     const pg=el('div','photo-grid');
@@ -803,10 +764,8 @@ function renderFolderView(fid){
 
   if(fps.length===0){
     const es=el('div','empty-state');
-    es.innerHTML=`
-      <div class="empty-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
-      <h2>Empty folder</h2>
-      <p>Upload photos to add them to <em>${folder.name}</em>.</p>`;
+    es.innerHTML=`<div class="empty-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+      <h2>Empty folder</h2><p>Upload photos to add them to <em>${folder.name}</em>.</p>`;
     $main.appendChild(es);
     return;
   }
@@ -825,7 +784,6 @@ function sortLabel(s){
   return ({'date-desc':'newest','date-asc':'oldest','name-asc':'name A–Z','name-desc':'name Z–A','count-desc':'most photos'})[s]||s;
 }
 
-/* ── Folder card */
 function makeFolderCard(folder,idx){
   const fps=photos.filter(p=>p.folderId===folder.id&&p.dataUrl);
   const card=el('div','folder-card');
@@ -870,8 +828,9 @@ function makeFolderCard(folder,idx){
   delBtn.addEventListener('click',e=>{
     e.stopPropagation();
     if(confirm(`Delete folder "${folder.name}"?\nPhotos inside will be moved to Unsorted on this page.`)){
-      photos.filter(p=>p.folderId===folder.id).forEach(p=>{p.folderId=null;});
-      savePhotos();
+      const updates = {};
+      photos.filter(p => p.folderId === folder.id).forEach(p => { updates[`${p.id}/folderId`] = null; });
+      if(Object.keys(updates).length) refPhotos.update(updates);
       refFolders.child(folder.id).remove()
         .then(()=>toast('Folder deleted'))
         .catch(err=>{console.error(err);toast('Failed to delete')});
@@ -887,7 +846,6 @@ function makeFolderCard(folder,idx){
   return card;
 }
 
-/* ── Photo item */
 function makePhotoItem(p,localIdx,list){
   const item=el('div','photo-item');
   item.style.animationDelay=Math.min(localIdx*22,400)+'ms';
@@ -899,11 +857,6 @@ function makePhotoItem(p,localIdx,list){
     item.appendChild(img);
     item.classList.add('clickable');
     item.addEventListener('click',()=>openLightbox(p.id,list));
-  } else if(!p.decodeFailed){
-    const sp=el('div','raw-proc');
-    sp.innerHTML=`<div class="spin"></div><span>Processing ${(p.name.split('.').pop()||'RAW').toUpperCase()}…</span>`;
-    item.appendChild(sp);
-    if(p._ref)doRawDecode(p,item,list);
   } else {
     const er=el('div','raw-err');
     er.innerHTML=`<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Preview unavailable</span>`;
@@ -918,57 +871,23 @@ function makePhotoItem(p,localIdx,list){
 
   const d=el('button','item-del','');d.title='Remove';
   d.innerHTML=`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-  d.addEventListener('click',e=>{e.stopPropagation();removePhoto(p.id)});
+  d.addEventListener('click',e=>{
+    e.stopPropagation();
+    if(confirm('Remove this photo?')) {
+      refPhotos.child(p.id).remove().then(() => toast('Photo removed'));
+    }
+  });
   item.appendChild(d);
   return item;
 }
 
-async function doRawDecode(p,item,list){
-  const rawBase64Url = await decodeRaw(p._ref);
-  p._ref=null;
-  if(rawBase64Url){
-    try {
-      const jpgFile = dataURLtoFile(rawBase64Url, p.name + ".jpg");
-      p.dataUrl = await uploadToCloudflare(jpgFile);
-      savePhotos();
-      
-      item.innerHTML='';
-      const img=document.createElement('img');img.src=p.dataUrl;img.alt=p.name;
-      item.appendChild(img);item.classList.add('clickable');
-      item.addEventListener('click',()=>openLightbox(p.id,list));
-    } catch (e) {
-      console.error("Cloudflare upload failed on raw image:", e);
-      p.decodeFailed=true;savePhotos();
-      item.innerHTML='';
-      const er=el('div','raw-err');
-      er.innerHTML=`<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Upload failed</span>`;
-      item.appendChild(er);
-    }
-  } else {
-    p.decodeFailed=true;savePhotos();
-    item.innerHTML='';
-    const er=el('div','raw-err');
-    er.innerHTML=`<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Preview unavailable</span>`;
-    item.appendChild(er);
-  }
-  const ov=el('div','photo-overlay');
-  ov.innerHTML=`${p.isRaw?`<span class="raw-badge">${(p.name.split('.').pop()||'').toUpperCase()}</span>`:''}
-    <div class="photo-name-lbl">${p.name}</div><div class="photo-meta-lbl">${fmtB(p.size)} · ${fmtD(p.date)}</div>`;
-  item.appendChild(ov);
-  const d=el('button','item-del','');d.title='Remove';
-  d.innerHTML=`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-  d.addEventListener('click',e=>{e.stopPropagation();removePhoto(p.id)});
-  item.appendChild(d);
-}
-
-function removePhoto(id){photos=photos.filter(p=>p.id!==id);savePhotos();renderAll();}
-
 /* ═══════════════════════════════════════════════
-   FILES (Updated for Cloudflare Images)
+   FILES (UPLOADS DIRECT TO R2 THEN FIREBASE)
 ═══════════════════════════════════════════════ */
 async function addFiles(fileList){
   if(!currentPageId){toast('Select a page first');return;}
-  const files=Array.from(fileList);let added=0;
+  const files=Array.from(fileList);
+  let added=0;
   
   if(files.length > 0) {
     toast(`Uploading ${files.length} file(s)... Please wait.`);
@@ -978,35 +897,45 @@ async function addFiles(fileList){
     const raw=isRaw(file.name);
     let dataUrl=null;
     
-    if(!raw){
-      try{
+    try {
+      if(raw){
+        const rawBase64Url = await decodeRaw(file);
+        if(rawBase64Url){
+          const jpgFile = dataURLtoFile(rawBase64Url, file.name + ".jpg");
+          dataUrl = await uploadToCloudflare(jpgFile);
+        } else {
+          toast(`Failed to decode RAW: ${file.name}`);
+          continue;
+        }
+      } else {
         dataUrl = await uploadToCloudflare(file);
-      }catch(e){
-        console.error('Failed to upload file to Cloudflare:', e);
-        toast(`Failed to upload ${file.name}`);
-        continue;
       }
+
+      // Save to Firebase immediately after getting the R2 URL
+      await refPhotos.child(uid()).set({
+        pageId: currentPageId,
+        folderId: currentFolderId,
+        name: file.name,
+        size: file.size,
+        dataUrl: dataUrl,
+        isRaw: raw,
+        date: new Date().toISOString()
+      });
+      
+      added++;
+    } catch(e) {
+      console.error('Failed to upload file:', e);
+      toast(`Failed to upload ${file.name}`);
     }
-    photos.push({
-      id:uid(),
-      pageId:currentPageId,
-      folderId:currentFolderId,
-      name:file.name,size:file.size,
-      dataUrl,isRaw:raw,decodeFailed:false,
-      date:new Date().toISOString(),
-      _ref:raw?file:null,
-    });
-    added++;
   }
+  
   if(added){
-    savePhotos();
-    renderAll();
-    toast(`${added} photo${added!==1?'s':''} added via Cloudflare`);
+    toast(`${added} photo${added!==1?'s':''} successfully uploaded!`);
   }
 }
 
 /* ═══════════════════════════════════════════════
-   MODAL (multi-purpose: create/rename folder, create/rename page)
+   MODAL
 ═══════════════════════════════════════════════ */
 const $modalBg   =document.getElementById('modalBg');
 const $modalTitle=document.getElementById('modalTitle');
@@ -1087,25 +1016,18 @@ $modalInput.addEventListener('keydown',e=>{if(e.key==='Enter')$modalOk.click();i
 document.getElementById('newFolderBtn').addEventListener('click',openCreateModal);
 document.getElementById('newPageBtn').addEventListener('click',openCreatePageModal);
 
-/* ── Delete page */
 function deletePage(page){
   const pageFolders=folders.filter(f=>f.pageId===page.id);
   const pagePhotos =photos.filter(p=>p.pageId===page.id);
-  const msg=`Delete page "${page.name}"?\n\n` +
-    `This will also delete:\n• ${pageFolders.length} folder${pageFolders.length!==1?'s':''}\n• ${pagePhotos.length} photo${pagePhotos.length!==1?'s':''}\n\nThis cannot be undone.`;
+  const msg=`Delete page "${page.name}"?\n\nThis will also delete:\n• ${pageFolders.length} folder${pageFolders.length!==1?'s':''}\n• ${pagePhotos.length} photo${pagePhotos.length!==1?'s':''}\n\nThis cannot be undone.`;
   if(!confirm(msg))return;
 
-  // Remove related photos locally
-  photos=photos.filter(p=>p.pageId!==page.id);
-  savePhotos();
-
-  // Remove related folders from Firebase
   const updates={};
-  pageFolders.forEach(f=>{updates[f.id]=null;});
-  const foldersPromise=Object.keys(updates).length?refFolders.update(updates):Promise.resolve();
+  pageFolders.forEach(f=>{updates[`folders/${f.id}`]=null;});
+  pagePhotos.forEach(p=>{updates[`photos/${p.id}`]=null;});
+  updates[`pages/${page.id}`]=null;
 
-  foldersPromise
-    .then(()=>refPages.child(page.id).remove())
+  db.ref(FB_ROOT).update(updates)
     .then(()=>{
       if(currentPageId===page.id){
         currentPageId=pages.find(p=>p.id!==page.id)?.id||null;
@@ -1195,10 +1117,7 @@ let tx=null;
 $lb.addEventListener('touchstart',e=>{tx=e.touches[0].clientX;});
 $lb.addEventListener('touchend',e=>{if(tx===null)return;const dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>46)lbNav(dx<0?1:-1);tx=null;});
 
-/* ── Logo click → go to current page root */
 document.getElementById('logo').addEventListener('click',()=>{currentFolderId=null;renderAll();});
-
-/* ── Sidebar toggle (mobile) */
 document.getElementById('sbToggle').addEventListener('click',e=>{
   e.stopPropagation();
   document.getElementById('sidebar').classList.toggle('open');
@@ -1224,10 +1143,8 @@ function el(tag,cls,txt){const e=document.createElement(tag);e.className=cls;if(
    INIT
 ═══════════════════════════════════════════════ */
 loadUI();
-loadPhotos();
 refreshSortChecks();
 bindFirebase();
-renderAll();
 </script>
 </body>
 </html>
