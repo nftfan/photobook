@@ -497,8 +497,27 @@ function dataURLtoFile(dataurl, filename) {
 }
 
 /* ═══════════════════════════════════════════════
-   RAW DECODER
+   RAW DECODER (With Auto-Rotation Fix)
 ═══════════════════════════════════════════════ */
+// Reads the EXIF orientation directly from the NEF/RAW header
+function getTiffOrientation(ab) {
+  try {
+    const view = new DataView(ab);
+    if (view.getUint16(0, false) !== 0x4949 && view.getUint16(0, false) !== 0x4D4D) return 1;
+    const isLittleEndian = view.getUint16(0, false) === 0x4949;
+    let offset = view.getUint32(4, isLittleEndian);
+    const numTags = view.getUint16(offset, isLittleEndian);
+    offset += 2;
+    for (let i = 0; i < numTags; i++) {
+      const tag = view.getUint16(offset + (i * 12), isLittleEndian);
+      if (tag === 0x0112) { // 0x0112 is the EXIF Orientation Tag
+        return view.getUint16(offset + (i * 12) + 8, isLittleEndian);
+      }
+    }
+  } catch (e) {}
+  return 1;
+}
+
 function extractJpegFromRaw(ab){
   const b=new Uint8Array(ab),L=b.length;
   let best=null;
@@ -516,13 +535,32 @@ function extractJpegFromRaw(ab){
   if(!best)return null;
   return URL.createObjectURL(new Blob([new Uint8Array(ab,best.s,best.e-best.s)],{type:'image/jpeg'}));
 }
-function blobToDataUrl(url){
+
+// Applies the orientation to the canvas before generating the final image
+function blobToDataUrl(url, orientation){
   return new Promise((res,rej)=>{
     const img=new Image();
     img.onload=()=>{
       const c=document.createElement('canvas');
-      c.width=img.naturalWidth;c.height=img.naturalHeight;
-      c.getContext('2d').drawImage(img,0,0);
+      const ctx=c.getContext('2d');
+      const w=img.naturalWidth, h=img.naturalHeight;
+      
+      // Swap width and height if rotated 90 or 270 degrees
+      if(orientation >= 5 && orientation <= 8){ c.width=h; c.height=w; }
+      else { c.width=w; c.height=h; }
+      
+      ctx.translate(c.width/2, c.height/2);
+      switch(orientation) {
+        case 2: ctx.scale(-1, 1); break;
+        case 3: ctx.rotate(Math.PI); break;
+        case 4: ctx.scale(1, -1); break;
+        case 5: ctx.rotate(0.5 * Math.PI); ctx.scale(1, -1); break;
+        case 6: ctx.rotate(0.5 * Math.PI); break; // 90° CW
+        case 7: ctx.rotate(0.5 * Math.PI); ctx.scale(-1, 1); break;
+        case 8: ctx.rotate(-0.5 * Math.PI); break; // 90° CCW
+      }
+      
+      ctx.drawImage(img, -w/2, -h/2);
       res(c.toDataURL('image/jpeg',.88));
       URL.revokeObjectURL(url);
     };
@@ -530,8 +568,15 @@ function blobToDataUrl(url){
     img.src=url;
   });
 }
+
 async function decodeRaw(file){
-  try{const b=await file.arrayBuffer();const u=extractJpegFromRaw(b);if(!u)return null;return await blobToDataUrl(u);}
+  try{
+    const b=await file.arrayBuffer();
+    const orientation = getTiffOrientation(b); // Get camera rotation
+    const u=extractJpegFromRaw(b);
+    if(!u)return null;
+    return await blobToDataUrl(u, orientation); // Pass it to canvas
+  }
   catch{return null;}
 }
 
