@@ -463,7 +463,7 @@ db.ref('.info/connected').on('value',snap=>{
 });
 
 /* ═══════════════════════════════════════════════
-   CLOUDFLARE UPLOAD CONFIG
+   CLOUDFLARE UPLOAD CONFIG WITH CORS PROXY
 ═══════════════════════════════════════════════ */
 const CF_ACCOUNT_ID = "08297100f6b1a14ee551b7a57f1bdae3";
 const CF_API_TOKEN  = "cfat_puzcjGXw205A7t2bR6QtaBPuRceLjbcidBOSM8a58c4ff636";
@@ -472,20 +472,28 @@ async function uploadToCloudflare(file) {
   const formData = new FormData();
   formData.append('file', file);
   
-  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/images/v1`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${CF_API_TOKEN}`
-    },
-    body: formData
-  });
+  // CORS Proxy bypasses Cloudflare's strict browser restrictions
+  const targetUrl = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/images/v1`;
+  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
   
-  const data = await res.json();
-  if (data.success) {
-    // Return the primary accessible URL variant 
-    return data.result.variants[0];
+  try {
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${CF_API_TOKEN}`
+      },
+      body: formData
+    });
+    
+    const data = await res.json();
+    if (data.success) {
+      return data.result.variants[0];
+    }
+    throw new Error(data.errors?.[0]?.message || 'Cloudflare upload failed');
+  } catch (error) {
+    console.error("Upload error details:", error);
+    throw error;
   }
-  throw new Error(data.errors?.[0]?.message || 'Cloudflare upload failed');
 }
 
 // Convert DataURL (like from RAW decoders) to File/Blob for CF upload
@@ -541,7 +549,7 @@ async function decodeRaw(file){
    STATE
    pages:   [{id,name,date}]                            ← Firebase
    folders: [{id,pageId,name,date}]                     ← Firebase
-   photos:  [{id,folderId,pageId,name,size,dataUrl,...}] ← localStorage (dataUrl is now a Cloudflare URL)
+   photos:  [{id,folderId,pageId,name,size,dataUrl,...}] ← localStorage
 ═══════════════════════════════════════════════ */
 const SK_P_PHOTOS='gal_photos_v2';
 const SK_UI='gal_ui_v2';
