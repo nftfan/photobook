@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -464,6 +463,42 @@ db.ref('.info/connected').on('value',snap=>{
 });
 
 /* ═══════════════════════════════════════════════
+   CLOUDFLARE UPLOAD CONFIG
+═══════════════════════════════════════════════ */
+const CF_ACCOUNT_ID = "08297100f6b1a14ee551b7a57f1bdae3";
+const CF_API_TOKEN  = "cfat_puzcjGXw205A7t2bR6QtaBPuRceLjbcidBOSM8a58c4ff636";
+
+async function uploadToCloudflare(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/images/v1`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${CF_API_TOKEN}`
+    },
+    body: formData
+  });
+  
+  const data = await res.json();
+  if (data.success) {
+    // Return the primary accessible URL variant 
+    return data.result.variants[0];
+  }
+  throw new Error(data.errors?.[0]?.message || 'Cloudflare upload failed');
+}
+
+// Convert DataURL (like from RAW decoders) to File/Blob for CF upload
+function dataURLtoFile(dataurl, filename) {
+  var arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1],
+      bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
+  while(n--){
+      u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new File([u8arr], filename, {type:mime});
+}
+
+/* ═══════════════════════════════════════════════
    RAW DECODER
 ═══════════════════════════════════════════════ */
 function extractJpegFromRaw(ab){
@@ -506,7 +541,7 @@ async function decodeRaw(file){
    STATE
    pages:   [{id,name,date}]                            ← Firebase
    folders: [{id,pageId,name,date}]                     ← Firebase
-   photos:  [{id,folderId,pageId,name,size,dataUrl,...}] ← localStorage (binary data is too big for free RTDB plan)
+   photos:  [{id,folderId,pageId,name,size,dataUrl,...}] ← localStorage (dataUrl is now a Cloudflare URL)
 ═══════════════════════════════════════════════ */
 const SK_P_PHOTOS='gal_photos_v2';
 const SK_UI='gal_ui_v2';
@@ -848,7 +883,7 @@ function makePhotoItem(p,localIdx,list){
     item.addEventListener('click',()=>openLightbox(p.id,list));
   } else if(!p.decodeFailed){
     const sp=el('div','raw-proc');
-    sp.innerHTML=`<div class="spin"></div><span>Decoding ${(p.name.split('.').pop()||'RAW').toUpperCase()}…</span>`;
+    sp.innerHTML=`<div class="spin"></div><span>Processing ${(p.name.split('.').pop()||'RAW').toUpperCase()}…</span>`;
     item.appendChild(sp);
     if(p._ref)doRawDecode(p,item,list);
   } else {
@@ -871,14 +906,26 @@ function makePhotoItem(p,localIdx,list){
 }
 
 async function doRawDecode(p,item,list){
-  const dataUrl=await decodeRaw(p._ref);
+  const rawBase64Url = await decodeRaw(p._ref);
   p._ref=null;
-  if(dataUrl){
-    p.dataUrl=dataUrl;savePhotos();
-    item.innerHTML='';
-    const img=document.createElement('img');img.src=dataUrl;img.alt=p.name;
-    item.appendChild(img);item.classList.add('clickable');
-    item.addEventListener('click',()=>openLightbox(p.id,list));
+  if(rawBase64Url){
+    try {
+      const jpgFile = dataURLtoFile(rawBase64Url, p.name + ".jpg");
+      p.dataUrl = await uploadToCloudflare(jpgFile);
+      savePhotos();
+      
+      item.innerHTML='';
+      const img=document.createElement('img');img.src=p.dataUrl;img.alt=p.name;
+      item.appendChild(img);item.classList.add('clickable');
+      item.addEventListener('click',()=>openLightbox(p.id,list));
+    } catch (e) {
+      console.error("Cloudflare upload failed on raw image:", e);
+      p.decodeFailed=true;savePhotos();
+      item.innerHTML='';
+      const er=el('div','raw-err');
+      er.innerHTML=`<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Upload failed</span>`;
+      item.appendChild(er);
+    }
   } else {
     p.decodeFailed=true;savePhotos();
     item.innerHTML='';
@@ -899,15 +946,29 @@ async function doRawDecode(p,item,list){
 function removePhoto(id){photos=photos.filter(p=>p.id!==id);savePhotos();renderAll();}
 
 /* ═══════════════════════════════════════════════
-   FILES
+   FILES (Updated for Cloudflare Images)
 ═══════════════════════════════════════════════ */
 async function addFiles(fileList){
   if(!currentPageId){toast('Select a page first');return;}
   const files=Array.from(fileList);let added=0;
+  
+  if(files.length > 0) {
+    toast(`Uploading ${files.length} file(s)... Please wait.`);
+  }
+
   for(const file of files){
     const raw=isRaw(file.name);
     let dataUrl=null;
-    if(!raw){try{dataUrl=await readDU(file);}catch{continue;}}
+    
+    if(!raw){
+      try{
+        dataUrl = await uploadToCloudflare(file);
+      }catch(e){
+        console.error('Failed to upload file to Cloudflare:', e);
+        toast(`Failed to upload ${file.name}`);
+        continue;
+      }
+    }
     photos.push({
       id:uid(),
       pageId:currentPageId,
@@ -919,10 +980,11 @@ async function addFiles(fileList){
     });
     added++;
   }
-  if(added){savePhotos();renderAll();toast(`${added} photo${added!==1?'s':''} added`);}
-}
-function readDU(file){
-  return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});
+  if(added){
+    savePhotos();
+    renderAll();
+    toast(`${added} photo${added!==1?'s':''} added via Cloudflare`);
+  }
 }
 
 /* ═══════════════════════════════════════════════
